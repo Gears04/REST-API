@@ -1,51 +1,66 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/joho/godotenv"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
-	// Загрузка переменных окружения из .env файла
-	if err := godotenv.Load(); err != nil {
-		log.Println("Warning: .env file not found")
+	config, err := LoadConfig()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
 	}
 
-	// Инициализация JWT секретного ключа
-	InitAuth()
-
-	// TODO: Инициализация подключения к базе данных
-	// Используйте функцию InitDB() из database.go
-	if err := InitDB(); err != nil {
-		log.Fatal("Failed to connect to database:", err)
+	db, err := ConnectDB(config.DatabaseURL)
+	if err != nil {
+		log.Fatalf("database connection error: %v", err)
 	}
-	defer CloseDB()
+	defer db.Close()
 
-	// TODO: Настройка HTTP маршрутов
-	// Используйте обработчики из handlers.go
-	http.HandleFunc("/register", RegisterHandler)
-	http.HandleFunc("/login", LoginHandler)
-	http.HandleFunc("/profile", AuthMiddleware(ProfileHandler))
-	http.HandleFunc("/health", HealthHandler)
-
-	// Запуск сервера
-	port := getEnv("SERVER_PORT", "8080")
-	log.Printf("🚀 Server starting on port %s", port)
-	log.Printf("📝 Register: POST http://localhost:%s/register", port)
-	log.Printf("🔐 Login: POST http://localhost:%s/login", port)
-	log.Printf("👤 Profile: GET http://localhost:%s/profile (requires token)", port)
-	log.Printf("❤️  Health: GET http://localhost:%s/health", port)
-
-	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
-
-// getEnv получает значение переменной окружения или возвращает значение по умолчанию
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	app := &App{
+		DB:        db,
+		JWTSecret: []byte(config.JWTSecret),
+		JWTIssuer: config.JWTIssuer,
+		JWTTTL:    config.JWTTTL,
 	}
-	return defaultValue
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /register", app.RegisterHandler)
+	mux.HandleFunc("POST /login", app.LoginHandler)
+	mux.Handle("GET /profile", app.AuthMiddleware(http.HandlerFunc(app.ProfileHandler)))
+	mux.HandleFunc("GET /health", app.HealthHandler)
+
+	server := &http.Server{
+		Addr:              ":" + config.Port,
+		Handler:           SecurityHeaders(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("secure service is listening on http://localhost:%s", config.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	<-shutdownSignal.Done()
+	log.Print("shutting down server")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("graceful shutdown error: %v", err)
+	}
 }

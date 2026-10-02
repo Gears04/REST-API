@@ -1,124 +1,119 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// Глобальная переменная для подключения к БД
-var db *sql.DB
-
-// InitDB инициализирует подключение к базе данных
-func InitDB() error {
-	// TODO: Реализуйте подключение к PostgreSQL
-	//
-	// Что нужно сделать:
-	// 1. Составьте строку подключения используя fmt.Sprintf()
-	//    Формат: "host=%s port=%s user=%s password=%s dbname=%s sslmode=disable"
-	// 2. Получите параметры из переменных окружения с помощью getEnv()
-	// 3. Откройте соединение с sql.Open("postgres", connStr)
-	// 4. Проверьте подключение с помощью db.Ping()
-	// 5. Обработайте ошибки на каждом шаге
-	//
-	// Переменные окружения: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		getEnv("DB_HOST", "localhost"),
-		getEnv("DB_PORT", "5432"),
-		getEnv("DB_USER", "postgres"),
-		getEnv("DB_PASSWORD", "postgres"),
-		getEnv("DB_NAME", "secure_service"),
-	)
-
-	var err error
-	db, err = sql.Open("postgres", connStr)
+func ConnectDB(databaseURL string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %v", err)
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("failed to ping database: %v", err)
-	}
+	// Ограничения пула не дают приложению открыть неограниченное число соединений.
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
 
-	return nil
-}
-
-// CloseDB закрывает соединение с базой данных
-func CloseDB() {
-	if db != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
+
+	return db, nil
 }
 
-// CreateUser создает нового пользователя в базе данных
-func CreateUser(email, username, passwordHash string) (*User, error) {
-	// TODO: Реализуйте создание пользователя
-	// КРИТИЧЕСКИ ВАЖНО: Используйте параметризованный запрос для защиты от SQL-инъекций!
-	//
-	// Что нужно сделать:
-	// 1. Создайте SQL запрос с плейсхолдерами $1, $2, $3
-	//    INSERT INTO users (email, username, password_hash) VALUES ($1, $2, $3) RETURNING id, created_at
-	// 2. Выполните запрос с db.QueryRow(query, email, username, passwordHash)
-	// 3. Считайте результат в переменные user.ID и user.CreatedAt
-	// 4. Заполните остальные поля структуры User
-	// 5. Обработайте ошибки
-	//
-	// НИКОГДА не используйте fmt.Sprintf для построения SQL запросов!
+// CreateUser использует параметры $1, $2, $3. Значения передаются драйверу
+// отдельно от SQL-текста, поэтому пользовательский ввод не становится SQL-кодом.
+func CreateUser(ctx context.Context, db *sql.DB, email, username, passwordHash string) (*User, error) {
+	const query = `
+		INSERT INTO users (email, username, password_hash)
+		VALUES ($1, $2, $3)
+		RETURNING id, email, username, password_hash, created_at`
 
-	return nil, fmt.Errorf("not implemented - реализуйте создание пользователя")
+	user := &User{}
+	err := db.QueryRowContext(ctx, query, email, username, passwordHash).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Username,
+		&user.PasswordHash,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+
+	return user, nil
 }
 
-// GetUserByEmail находит пользователя по email
-func GetUserByEmail(email string) (*User, error) {
-	// TODO: Реализуйте поиск пользователя по email
-	// КРИТИЧЕСКИ ВАЖНО: Используйте параметризованный запрос!
-	//
-	// Что нужно сделать:
-	// 1. Создайте SQL запрос с плейсхолдером $1
-	//    SELECT id, email, username, password_hash, created_at FROM users WHERE email = $1
-	// 2. Выполните запрос с db.QueryRow(query, email)
-	// 3. Считайте все поля в структуру User с помощью Scan()
-	// 4. Обработайте случай sql.ErrNoRows (пользователь не найден)
-	//
-	// Подсказка: используйте sql.ErrNoRows для проверки отсутствия результата
+func GetUserByEmail(ctx context.Context, db *sql.DB, email string) (*User, error) {
+	const query = `
+		SELECT id, email, username, password_hash, created_at
+		FROM users
+		WHERE email = $1`
 
-	return nil, fmt.Errorf("not implemented - реализуйте поиск пользователя по email")
+	user := &User{}
+	err := db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Username,
+		&user.PasswordHash,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+
+	return user, nil
 }
 
-// GetUserByID находит пользователя по ID
-func GetUserByID(userID int) (*User, error) {
-	// TODO: Реализуйте поиск пользователя по ID
-	// КРИТИЧЕСКИ ВАЖНО: Используйте параметризованный запрос!
-	//
-	// Что нужно сделать:
-	// 1. Создайте SQL запрос для поиска по ID
-	// 2. НЕ включайте password_hash в SELECT (он не нужен для профиля)
-	// 3. Выполните запрос и обработайте результат
-	//
-	// Запрос: SELECT id, email, username, created_at FROM users WHERE id = $1
+func GetUserByID(ctx context.Context, db *sql.DB, id int64) (*User, error) {
+	const query = `
+		SELECT id, email, username, password_hash, created_at
+		FROM users
+		WHERE id = $1`
 
-	return nil, fmt.Errorf("not implemented - реализуйте поиск пользователя по ID")
+	user := &User{}
+	err := db.QueryRowContext(ctx, query, id).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Username,
+		&user.PasswordHash,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("get user by id: %w", err)
+	}
+
+	return user, nil
 }
 
-// UserExistsByEmail проверяет, существует ли пользователь с данным email
-func UserExistsByEmail(email string) (bool, error) {
-	// TODO: Реализуйте проверку существования пользователя
-	// КРИТИЧЕСКИ ВАЖНО: Используйте параметризованный запрос!
-	//
-	// Что нужно сделать:
-	// 1. Используйте SQL функцию EXISTS для эффективной проверки
-	//    SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)
-	// 2. Результат будет булевым значением
-	// 3. Считайте результат в переменную типа bool
-	//
-	// Это эффективнее чем получать полную запись пользователя
+func UserExistsByEmail(ctx context.Context, db *sql.DB, email string) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)`
 
-	return false, fmt.Errorf("not implemented - реализуйте проверку существования пользователя")
+	var exists bool
+	if err := db.QueryRowContext(ctx, query, email).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check user existence: %w", err)
+	}
+	return exists, nil
 }
 
-// GetDB возвращает подключение к базе данных (для тестирования)
-func GetDB() *sql.DB {
-	return db
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

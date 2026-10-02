@@ -1,43 +1,34 @@
 package main
 
-import (
-	"time"
+import "time"
 
-	"github.com/golang-jwt/jwt/v5"
-)
-
-// User представляет пользователя в системе
+// User — запись пользователя из базы данных.
+// PasswordHash никогда не отправляется клиенту благодаря json:"-".
 type User struct {
-	ID           int       `json:"id"`
+	ID           int64     `json:"id"`
 	Email        string    `json:"email"`
 	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"` // "-" исключает поле из JSON
+	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// RegisterRequest структура для запроса регистрации
 type RegisterRequest struct {
 	Email    string `json:"email"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// LoginRequest структура для запроса входа
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-// AuthResponse структура ответа с токеном
-type AuthResponse struct {
-	Token string `json:"token"`
-	User  User   `json:"user"`
+type LoginResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64  `json:"expires_in"`
 }
 
-// Claims структура для JWT токена
-type Claims struct {
-	UserID   int    `json:"user_id"`
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	jwt.RegisteredClaims
+type ErrorResponse struct {
+	Error string `json:"error"`
 }
