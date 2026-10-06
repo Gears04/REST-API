@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+secure-service
+secure-service.exe
+*.log
